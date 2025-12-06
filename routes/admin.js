@@ -7,12 +7,12 @@ const multer = require('multer');
 const upload = multer({ dest: 'uploads/' });
 const { authAdmin } = require('./middleware');
 
-// ✅ FIX: Add default GET route to avoid "Cannot GET /api/admin"
+// Default route
 router.get("/", (req, res) => {
   res.json({ message: "Admin API Working!" });
 });
 
-// Change admin password (requires current password)
+// Change admin password
 router.post('/change-password', authAdmin, async (req, res)=>{
   const { username, currentPassword, newPassword } = req.body;
   const admin = await Admin.findOne({ username });
@@ -24,7 +24,7 @@ router.post('/change-password', authAdmin, async (req, res)=>{
   res.json({ success: true });
 });
 
-// Upload farmer profile image + create farmer
+// Create farmer
 router.post('/farmers', upload.single('profile'), async (req, res)=>{
   const { name, phone } = req.body;
   let profileImage = null;
@@ -42,7 +42,7 @@ router.get('/farmers', authAdmin, async (req, res)=>{
   res.json(list);
 });
 
-// Delete farmer + related work
+// Delete farmer
 router.delete('/farmers/:id', authAdmin, async (req, res)=>{
   await Farmer.findByIdAndDelete(req.params.id);
   await Work.deleteMany({ farmer: req.params.id });
@@ -53,27 +53,22 @@ router.delete('/farmers/:id', authAdmin, async (req, res)=>{
 router.post('/work', authAdmin, async (req, res)=>{
   let { farmerId, workType, minutes, ratePer60, notes, timeStr } = req.body;
 
-  // Support time formats like "1.2" → 1 hour 20 mins
-  if((typeof minutes === 'undefined' || minutes === null || minutes === '') && timeStr){
+  // Support "1.2" → 1 hour 20 minutes
+  if(!minutes && timeStr){
     try{
-      const s = String(timeStr).trim();
-      if(s.includes('.')){
-        const parts = s.split('.');
-        const h = Number(parts[0]) || 0;
-        let mstr = parts[1] || '0';
-        if(mstr.length === 1) mstr = mstr + '0';
-        let m = Number(mstr);
-        if(isNaN(m)) m = 0;
-        const addHours = Math.floor(m/60);
-        m = m % 60;
-        minutes = h*60 + addHours*60 + m;
+      if(timeStr.includes(".")){
+        let [h, m] = timeStr.split(".");
+        if(m.length === 1) m = m + "0";
+        minutes = Number(h) * 60 + Number(m);
       } else {
-        minutes = Number(s) || 0;
+        minutes = Number(timeStr) || 0;
       }
-    }catch(e){ minutes = Number(minutes) || 0 }
+    }catch(err){
+      minutes = 0;
+    }
   }
 
-  const totalAmount = (minutes/60) * Number(ratePer60 || 0);
+  const totalAmount = (minutes/60) * Number(ratePer60);
   const w = new Work({ farmer: farmerId, workType, minutes, ratePer60, totalAmount, notes });
   await w.save();
   res.json(w);
@@ -82,13 +77,13 @@ router.post('/work', authAdmin, async (req, res)=>{
 // Update work
 router.put('/work/:id', authAdmin, async (req, res)=>{
   const { workType, minutes, ratePer60, paymentGiven, notes } = req.body;
-  const totalAmount = (minutes/60) * Number(ratePer60 || 0);
-  const w = await Work.findByIdAndUpdate(
-    req.params.id, 
-    { workType, minutes, ratePer60, totalAmount, paymentGiven, notes }, 
+  const totalAmount = (minutes/60) * Number(ratePer60);
+  const updated = await Work.findByIdAndUpdate(
+    req.params.id,
+    { workType, minutes, ratePer60, totalAmount, paymentGiven, notes },
     { new: true }
   );
-  res.json(w);
+  res.json(updated);
 });
 
 // Delete work
@@ -97,7 +92,7 @@ router.delete('/work/:id', authAdmin, async (req, res)=>{
   res.json({ success: true });
 });
 
-// List all work entries
+// List all work
 router.get('/work', authAdmin, async (req, res)=>{
   const filter = {};
   if(req.query.farmerId) filter.farmer = req.query.farmerId;
@@ -105,20 +100,15 @@ router.get('/work', authAdmin, async (req, res)=>{
   res.json(list);
 });
 
-/**
- * Record a payment for a farmer or attach it to a specific work entry.
- * BODY: { amount: Number, workId: optional }
- */
+// Record payment
 router.post('/payment/:farmerId', authAdmin, async (req, res)=>{
   const { amount, workId } = req.body;
   const farmer = await Farmer.findById(req.params.farmerId);
   if(!farmer) return res.status(404).json({ error: 'Farmer not found' });
 
-  farmer.payments = farmer.payments || [];
   farmer.payments.push({ amount: Number(amount), workId: workId || undefined });
   await farmer.save();
 
-  // If workId provided, update the work's paymentGiven
   if(workId){
     const work = await Work.findById(workId);
     if(work){
